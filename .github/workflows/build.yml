@@ -1,0 +1,59 @@
+name: Build and test
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: debian:trixie-slim
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates git make build-essential python3 python3-intelhex sdcc=4.5.0+dfsg-1 sdcc-ucsim=4.5.0+dfsg-1 tar gzip
+      - uses: actions/checkout@v4
+      - name: Test
+        run: make -C firmware test
+      - name: Build CH552 and CH559
+        run: |
+          make -C firmware ch552-baseline-check
+          make -C firmware/ch559 standalone-candidate
+      - name: Prepare firmware artifacts
+        run: |
+          mkdir -p dist
+          cp build/firmware-uid-compact-soft-b/pakuri.bin dist/PaKuRi-CH552.bin
+          cp build/firmware-uid-compact-soft-b/pakuri.ihx dist/PaKuRi-CH552.hex
+          cp build/ch559-standalone-candidate/pakuri.bin dist/PaKuRi-CH559-experimental.bin
+          cp build/ch559-standalone-candidate/pakuri.ihx dist/PaKuRi-CH559-experimental.hex
+          (cd dist && sha256sum ./*.bin ./*.hex > SHA256SUMS)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PaKuRi-firmware
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: PaKuRi-firmware
+          path: dist
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "$GITHUB_REF_NAME" --notes 'CH552: baseline image. CH559: experimental candidate; not hardware-verified.'
